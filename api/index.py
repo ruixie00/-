@@ -1,27 +1,23 @@
-# api/index.py - 最终加密版 (带锁的完整大脑)
+# api/index.py - 终极增强版 (带锁 + 北京时间校准)
 from fastapi import FastAPI, Request, HTTPException, Security
 from fastapi.security import APIKeyHeader
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone # <--- 改动1: 引入时区处理
 from webdav3.client import Client
 import tempfile
 
 app = FastAPI()
 
-# ====== 1. 安全配置 (新增的锁) ======
-# 从 Vercel 环境变量里读取密码，如果没有设置，默认是 "123456" (为了防止报错)
+# ====== 1. 安全配置 ======
 API_SECRET = os.environ.get("API_SECRET", "123456")
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 async def check_auth(request: Request):
-    # 检查请求头里有没有钥匙
     auth = request.headers.get("Authorization")
-    # 允许 Bearer Token 格式或者直接密码
     if not auth:
         raise HTTPException(status_code=403, detail="🔒 门锁紧闭：请出示 API 密钥")
     
-    # 处理 "Bearer <key>" 格式
     if auth.startswith("Bearer "):
         token = auth.split(" ")[1]
     else:
@@ -44,15 +40,18 @@ def get_client():
     return Client(webdav_config)
 
 # ====== 3. 核心能力 (Write, Search, Read) ======
-# (为了节省篇幅，这里复用之前的功能函数，逻辑不变)
+# (前面的函数保持不变)
 def save_note(title, content):
     client = get_client()
     if not client: return "❌ 错误: 没配置坚果云密码"
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        # 这里保存文件名时，也尽量用北京时间，防止文件名乱套
+        beijing_now = datetime.now(timezone.utc) + timedelta(hours=8)
+        timestamp = beijing_now.strftime("%Y-%m-%d_%H%M%S")
+        
         safe_title = "".join([c for c in title if c.isalnum() or c in (' ','-','_')]).strip()
         filename = f"{timestamp}_{safe_title}.md"
-        md = f"# {title}\n\n{content}\n\n---\nCreated: {datetime.now()}"
+        md = f"# {title}\n\n{content}\n\n---\nCreated: {beijing_now}"
         with tempfile.NamedTemporaryFile(mode='w+', delete=False, encoding='utf-8', suffix='.md') as t:
             t.write(md)
             tmp_path = t.name
@@ -83,24 +82,36 @@ def read_note(filename):
         return f"📄 【{filename}】内容:\n\n{content[:3000]}"
     except Exception as e: return f"❌ 读取失败: {str(e)}"
 
-# ====== 4. MCP 接口 (这里加了锁！) ======
+# ====== 4. 新增功能: 获取正确时间 ======
+def get_current_status():
+    # 获取 UTC 时间
+    utc_now = datetime.now(timezone.utc)
+    # 强制加 8 小时变成北京时间
+    beijing_now = utc_now + timedelta(hours=8)
+    
+    # 格式化输出
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    weekday_str = weekdays[beijing_now.weekday()]
+    time_str = beijing_now.strftime("%Y-%m-%d %H:%M:%S")
+    
+    return f"🕒 当前北京时间: {time_str} ({weekday_str})\n🌍 服务器时区: UTC+8 (已校准)"
+
+# ====== 5. MCP 接口 ======
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
-    # 🛑 只有这一行是新增的：先检查钥匙，没有钥匙不准往下走
     await check_auth(request)
     
     data = await request.json()
     method = data.get("method")
     msg_id = data.get("id")
     
-    # (后面的握手、工具列表、调用逻辑全部保持不变)
     if method == "initialize":
         return {
             "jsonrpc": "2.0", "id": msg_id,
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "EthanSecureMemory", "version": "4.0"}
+                "serverInfo": {"name": "EthanSecureMemory", "version": "4.1"}
             }
         }
     
@@ -123,6 +134,12 @@ async def mcp_endpoint(request: Request):
                         "name": "read_memory",
                         "description": "【读取】读取某篇笔记的详细内容",
                         "inputSchema": {"type": "object", "properties": {"filename": {"type": "string"}}, "required": ["filename"]}
+                    },
+                    # 👇👇👇 新增的工具注册在这里 👇👇👇
+                    {
+                        "name": "get_world_time",
+                        "description": "【时间】获取当前的北京时间和日期，用于判断是白天还是晚上",
+                        "inputSchema": {"type": "object", "properties": {}, "required": []} 
                     }
                 ]
             }
@@ -133,14 +150,16 @@ async def mcp_endpoint(request: Request):
         name = params.get("name")
         args = params.get("arguments", {})
         
+        res = "未知指令"
         if name == "save_memory": res = save_note(args.get("title"), args.get("content"))
         elif name == "search_memory": res = search_notes(args.get("keyword"))
         elif name == "read_memory": res = read_note(args.get("filename"))
-        else: res = "未知指令"
+        # 👇👇👇 新增的调用逻辑 👇👇👇
+        elif name == "get_world_time": res = get_current_status()
             
         return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": [{"type": "text", "text": res}]}}
 
     return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
 
 @app.get("/")
-def home(): return {"status": "Secure Server Online 🔒"}
+def home(): return {"status": "Secure Server Online 🔒 (Time Calibrated)"}
