@@ -1,7 +1,7 @@
-# api/index.py - 智能记忆库（V6.2 完美版 - 3000字大容量 + 无门卫）
+# api/index.py - 智能记忆库（V6.3 最终完整修复版 - 绝无删减）
 from fastapi import FastAPI, Request, HTTPException, Depends, status
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field  # 修复了丢失的依赖
+from pydantic import BaseModel, Field
 import os
 import json
 import re
@@ -14,7 +14,7 @@ from functools import lru_cache
 app = FastAPI(
     title="Ethan智能记忆库",
     description="24小时在线的个人AI记忆管家",
-    version="6.2"
+    version="6.3"
 )
 
 # ====== 1. 安全鉴权 ======
@@ -230,11 +230,15 @@ def natural_search_notes(keyword: str) -> str:
 
 def safe_read_note(filename: str) -> str:
     """安全的笔记读取"""
+    # 【V6.3 修复 1：AI如果忘了后缀，自动补全】
+    if not filename.endswith('.md'):
+        filename += '.md'
+        
     client = create_webdav_client()
     tmp_path = None
     
     try:
-        if not filename.endswith('.md') or '..' in filename or '/' in filename:
+        if '..' in filename or '/' in filename:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="❌ 文件名不合法"
@@ -320,7 +324,7 @@ def detect_search_intent(message: str) -> bool:
 async def root():
     return {
         "status": "🚀 Ethan智能记忆库运行中",
-        "version": "6.2",
+        "version": "6.3",
         "features": ["安全鉴权", "智能搜索", "自然语言回复", "北京时间"]
     }
 
@@ -368,7 +372,7 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "Ethan智能记忆库", "version": "6.2"}
+                "serverInfo": {"name": "Ethan智能记忆库", "version": "6.3"}
             }
         }
     
@@ -438,6 +442,9 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
             
         except HTTPException as e:
             return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32000, "message": e.detail}}
+        except Exception as e:
+            # 【V6.3 修复 2：拦截底层异常，转为文字反馈，防止 Kelivo 弹未知错误】
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": [{"type": "text", "text": f"🔧 工具执行时遇到小状况: {str(e)}。可能文件不存在，请换个词试试。"}]}}
     
     return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
 
