@@ -1,6 +1,7 @@
 # api/index.py - 智能记忆库（自然语言版）
 from fastapi import FastAPI, Request, HTTPException, Depends, status
 from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
 import os
 import json
 import re
