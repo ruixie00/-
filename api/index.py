@@ -1,23 +1,22 @@
-# api/index.py - 智能增强版 (安全 + 性能 + 更聪明的搜索)
+# api/index.py - 智能记忆库（自然语言版）
 from fastapi import FastAPI, Request, HTTPException, Depends, status
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field
 import os
 import json
 import re
 from datetime import datetime, timedelta, timezone
 from webdav3.client import Client
 import tempfile
-import jieba  # 新增：中文分词
-from functools import lru_cache  # 新增：内存缓存
+import jieba
+from functools import lru_cache
 
 app = FastAPI(
     title="Ethan智能记忆库",
     description="24小时在线的个人AI记忆管家",
-    version="6.0"
+    version="6.1"
 )
 
-# ====== 1. 安全鉴权优化 ======
+# ====== 1. 安全鉴权 ======
 API_SECRET = os.environ.get("API_SECRET", "123456")
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
@@ -41,7 +40,7 @@ async def verify_api_key(auth_header: str = Depends(api_key_header)):
             detail="🚫 API密钥错误或已过期"
         )
     
-    return True  # 验证通过
+    return True
 
 # ====== 2. 数据模型定义 ======
 class SaveNoteRequest(BaseModel):
@@ -54,7 +53,7 @@ class SearchRequest(BaseModel):
 class SmartQueryRequest(BaseModel):
     message: str = Field(..., min_length=1, description="用户说的话")
 
-# ====== 3. 坚果云连接优化 ======
+# ====== 3. 坚果云连接 ======
 webdav_config = {
     'webdav_hostname': os.environ.get('NUTSTORE_HOST', 'https://dav.jianguoyun.com/dav/'),
     'webdav_login': os.environ.get('NUTSTORE_EMAIL', ''),
@@ -72,7 +71,7 @@ def create_webdav_client():
         )
     return Client(webdav_config)
 
-# ====== 4. 核心功能（带安全清理） ======
+# ====== 4. 核心功能 ======
 
 def get_beijing_time():
     """获取北京时间（确保一致性）"""
@@ -92,7 +91,7 @@ def safe_save_note(title: str, content: str) -> str:
         if not safe_title:
             safe_title = "未命名笔记"
             
-        filename = f"{timestamp}_{safe_title[:50]}.md"
+        filename = f"{timestamp}_每日总结.md"
         md_content = f"""# {title}
 
 {content}
@@ -126,39 +125,112 @@ def safe_save_note(title: str, content: str) -> str:
             except:
                 pass
 
+def read_note_content_safe(client, filename: str, limit: int = 1000) -> str:
+    """安全读取笔记内容"""
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.md') as tmp:
+            tmp_path = tmp.name
+        
+        client.download_sync(remote_path=f"{VAULT_PATH}/{filename}", local_path=tmp_path)
+        
+        with open(tmp_path, 'r', encoding='utf-8') as f:
+            return f.read(limit)
+            
+    except Exception as e:
+        return f"读取失败: {str(e)}"
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
+
 @lru_cache(maxsize=128)
-def safe_search_notes(keyword: str) -> str:
-    """带缓存的笔记搜索（10分钟内相同关键词不重复搜索）"""
+def natural_search_notes(keyword: str) -> str:
+    """自然语言搜索：返回自然语言结果"""
     client = create_webdav_client()
     
     try:
-        # 列出所有文件
-        files = client.list(VAULT_PATH)
+        # 获取所有.md文件
+        all_files = client.list(VAULT_PATH)
+        md_files = [f for f in all_files if f.endswith('.md')]
         
-        # 过滤出.md文件并匹配关键词
+        if not md_files:
+            return f"我在你的记忆库里没有找到任何笔记文件，可能还没有开始记录呢。"
+        
+        # 搜索结果
         matched_files = []
-        for f in files:
-            if f.endswith('.md') and keyword in f:
-                matched_files.append(f)
         
+        # 遍历每个文件，检查文件名和内容
+        for filename in md_files:
+            try:
+                # 1. 检查文件名
+                name_match = keyword.lower() in filename.lower()
+                
+                # 2. 检查文件内容（关键！）
+                content_match = False
+                content_preview = ""
+                
+                # 读取文件内容（只读前1000字符，提高速度）
+                content = read_note_content_safe(client, filename, 1000)
+                content_preview = content[:200]  # 预览200字符
+                
+                # 检查关键词是否在内容中
+                if keyword.lower() in content.lower():
+                    content_match = True
+                
+                # 如果文件名或内容匹配，就加入结果
+                if name_match or content_match:
+                    matched_files.append({
+                        "filename": filename,
+                        "name_match": name_match,
+                        "content_match": content_match,
+                        "preview": content_preview
+                    })
+                    
+            except Exception as e:
+                # 单个文件处理失败，继续下一个
+                continue
+        
+        # 生成自然语言回复
         if not matched_files:
-            return f"📭 没有找到包含『{keyword}』的笔记"
+            return f"我在你的记忆库里搜索了『{keyword}』，但没有找到相关的笔记。可能你还没有记录过相关内容，或者换个关键词试试？"
         
-        # 构建结果（最多显示5个）
-        result = f"🔍 找到了 {len(matched_files)} 篇相关笔记：\n\n"
-        for i, filename in enumerate(matched_files[:5], 1):
-            result += f"{i}. 📄 {filename}\n"
+        # 找到内容了，生成自然回复
+        if len(matched_files) == 1:
+            # 只有一个结果
+            file_info = matched_files[0]
+            filename = file_info["filename"]
+            preview = file_info["preview"]
+            
+            # 提取日期
+            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+            date_str = date_match.group(1) if date_match else "某天"
+            
+            return f"我在你的记忆库里找到了关于『{keyword}』的记录，是在{date_str}的每日总结里。内容大概是：{preview}..."
         
-        if len(matched_files) > 5:
-            result += f"\n... 还有 {len(matched_files) - 5} 篇未显示"
-        
-        return result
+        else:
+            # 多个结果
+            result = f"我在你的记忆库里找到了{len(matched_files)}篇关于『{keyword}』的笔记：\n\n"
+            
+            for i, file_info in enumerate(matched_files[:3], 1):
+                filename = file_info["filename"]
+                preview = file_info["preview"]
+                
+                # 提取日期
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+                date_str = date_match.group(1) if date_match else "某天"
+                
+                result += f"{i}. {date_str}的记录提到：{preview}...\n\n"
+            
+            if len(matched_files) > 3:
+                result += f"还有{len(matched_files) - 3}篇相关记录，需要的话我可以帮你详细查看。"
+            
+            return result
         
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"❌ 搜索失败: {str(e)}"
-        )
+        return f"抱歉，搜索你的记忆库时遇到了问题：{str(e)}。请稍后再试。"
 
 def safe_read_note(filename: str) -> str:
     """安全的笔记读取"""
@@ -188,7 +260,11 @@ def safe_read_note(filename: str) -> str:
         if len(content) >= 5000:
             content = content[:5000] + "\n\n... (内容过长，已截断)"
         
-        return f"📄 【{filename}】\n\n{content}"
+        # 提取日期
+        date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+        date_str = date_match.group(1) if date_match else "某天"
+        
+        return f"这是你{date_str}的笔记内容：\n\n{content}"
         
     except Exception as e:
         raise HTTPException(
@@ -203,9 +279,9 @@ def safe_read_note(filename: str) -> str:
             except:
                 pass
 
-# ====== 5. 智能功能增强 ======
+# ====== 5. 智能功能 ======
 
-# 初始化jieba（加载用户词典，提高分词准确率）
+# 初始化jieba
 try:
     jieba.initialize()
 except:
@@ -219,35 +295,30 @@ def smart_extract_keyword(message: str) -> str:
     # 2. 中文分词
     words = jieba.lcut(clean_msg)
     
-    # 3. 过滤停用词（简单版）
+    # 3. 过滤停用词
     stop_words = {'的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这'}
     
-    # 4. 提取关键词（名词/动词，长度>1）
+    # 4. 提取关键词
     keywords = []
     for word in words:
-        if (len(word) > 1 and  # 长度>1
-            word not in stop_words and  # 不是停用词
-            not word.isdigit()):  # 不是纯数字
+        if (len(word) > 1 and 
+            word not in stop_words and 
+            not word.isdigit()):
             keywords.append(word)
     
     # 5. 返回最可能的关键词
     if keywords:
-        # 优先返回第一个，如果太短则尝试组合
-        if len(keywords[0]) >= 2:
-            return keywords[0]
-        elif len(keywords) >= 2:
-            return keywords[1]
+        return keywords[0]
     
     # 6. 备用方案：提取消息中的最长中文词
     chinese_words = re.findall(r'[\u4e00-\u9fa5]{2,}', message)
     if chinese_words:
         return max(chinese_words, key=len)
     
-    return ""  # 无法提取
+    return ""
 
 def detect_search_intent(message: str) -> bool:
     """智能检测是否需要搜索记忆库"""
-    # 触发词列表（中英文）
     triggers = {
         '上次', '之前', '笔记', '记得', '学过', '写过', '记录',
         '查一下', '找找', '在哪里', '什么内容', '回忆', '想起',
@@ -255,7 +326,6 @@ def detect_search_intent(message: str) -> bool:
         'search', 'find', 'look for', 'where is', 'note', 'memory'
     }
     
-    # 转换为小写方便匹配
     lower_msg = message.lower()
     
     # 检查是否包含触发词
@@ -286,8 +356,8 @@ async def root():
     """首页"""
     return {
         "status": "🚀 Ethan智能记忆库运行中",
-        "version": "6.0",
-        "features": ["安全鉴权", "智能搜索", "记忆管理", "北京时间"],
+        "version": "6.1",
+        "features": ["安全鉴权", "智能搜索", "自然语言回复", "北京时间"],
         "endpoints": {
             "/health": "健康检查",
             "/api/time": "获取北京时间",
@@ -298,7 +368,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """健康检查端点（Vercel监控用）"""
+    """健康检查端点"""
     return {
         "status": "healthy",
         "timestamp": get_beijing_time().isoformat(),
@@ -344,28 +414,28 @@ async def smart_gateway(
             "reason": "无法提取有效关键词"
         }
     
-    # 3. 执行搜索（使用缓存）
+    # 3. 执行搜索（使用自然语言搜索）
     try:
-        search_result = safe_search_notes(keyword)
+        search_result = natural_search_notes(keyword)
         
         # 4. 生成增强提示
         enhanced_prompt = f"""
 用户说："{message}"
 
 【记忆助手提示】：
-检测到用户可能在询问相关记忆。已自动搜索关键词 "{keyword}"。
-搜索结果如下：
+我刚刚在用户的记忆库中搜索了相关信息，这是我发现的内容：
 {search_result}
 
-请基于以上搜索结果，自然地回答用户的问题。
+请基于以上发现，自然地回答用户的问题。
 就像你本来就记得这些内容一样，不要提到"搜索"或"查找"。
+如果用户的问题和记忆内容相关，请结合记忆内容回答。
 """
         
         return {
             "enhanced_message": enhanced_prompt,
             "triggered": True,
             "keyword": keyword,
-            "search_summary": search_result[:100] + "..."
+            "memory_summary": search_result[:100] + "..."
         }
         
     except HTTPException as e:
@@ -376,7 +446,7 @@ async def smart_gateway(
             "error": e.detail
         }
 
-# ====== 7. MCP接口（保持兼容） ======
+# ====== 7. MCP接口 ======
 @app.post("/mcp")
 async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_key)):
     data = await request.json()
@@ -392,8 +462,8 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
                 "capabilities": {"tools": {}},
                 "serverInfo": {
                     "name": "Ethan智能记忆库",
-                    "version": "6.0",
-                    "features": ["safe", "smart", "cached"]
+                    "version": "6.1",
+                    "features": ["natural_language", "smart_search"]
                 }
             }
         }
@@ -406,7 +476,7 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
                 "tools": [
                     {
                         "name": "save_memory",
-                        "description": "【安全写入】保存笔记到记忆库",
+                        "description": "【写入】保存日记、笔记或对话",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -418,7 +488,7 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
                     },
                     {
                         "name": "search_memory",
-                        "description": "【智能搜索】搜索记忆库中的笔记",
+                        "description": "【搜索】智能搜索笔记（自然语言回复）",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -429,7 +499,7 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
                     },
                     {
                         "name": "read_memory",
-                        "description": "【安全读取】读取指定笔记内容",
+                        "description": "【读取】读取笔记详情",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -440,7 +510,7 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
                     },
                     {
                         "name": "get_world_time",
-                        "description": "【时间服务】获取当前北京时间",
+                        "description": "【时间】获取北京时间",
                         "inputSchema": {"type": "object", "properties": {}}
                     },
                     {
@@ -467,24 +537,23 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
             if name == "save_memory":
                 result = safe_save_note(args.get("title", ""), args.get("content", ""))
             elif name == "search_memory":
-                result = safe_search_notes(args.get("keyword", ""))
+                result = natural_search_notes(args.get("keyword", ""))
             elif name == "read_memory":
                 result = safe_read_note(args.get("filename", ""))
             elif name == "get_world_time":
                 beijing_now = get_beijing_time()
-                result = f"🕒 {beijing_now.strftime('%Y年%m月%d日 %H:%M:%S')}"
+                result = f"🕒 现在是{beijing_now.strftime('%Y年%m月%d日 %H:%M:%S')}，{['周一','周二','周三','周四','周五','周六','周日'][beijing_now.weekday()]}"
             elif name == "smart_query":
-                # 简化版智能查询
+                # 智能查询（直接返回自然语言结果）
                 message = args.get("message", "")
                 if detect_search_intent(message):
                     keyword = smart_extract_keyword(message)
                     if keyword:
-                        search_res = safe_search_notes(keyword)
-                        result = f"🤖 已自动搜索『{keyword}』\n\n{search_res}"
+                        result = natural_search_notes(keyword)
                     else:
-                        result = "未检测到有效关键词"
+                        result = "我没有从你的话中找到需要搜索的关键词。"
                 else:
-                    result = "当前对话无需搜索记忆库"
+                    result = "当前对话不需要搜索记忆库。"
             else:
                 result = f"未知工具: {name}"
             
@@ -518,6 +587,3 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         "detail": exc.detail,
         "timestamp": get_beijing_time().isoformat()
     }
-
-# 自动创建requirements.txt需要的依赖
-# fastapi, uvicorn, python-multipart, pydantic, webdavclient3, jieba
