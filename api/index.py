@@ -1,7 +1,7 @@
-# api/index.py - 智能记忆库（自然语言版）
+# api/index.py - 智能记忆库（V6.2 完美版 - 3000字大容量 + 无门卫）
 from fastapi import FastAPI, Request, HTTPException, Depends, status
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field  # 修复了丢失的依赖
 import os
 import json
 import re
@@ -14,7 +14,7 @@ from functools import lru_cache
 app = FastAPI(
     title="Ethan智能记忆库",
     description="24小时在线的个人AI记忆管家",
-    version="6.1"
+    version="6.2"
 )
 
 # ====== 1. 安全鉴权 ======
@@ -126,8 +126,8 @@ def safe_save_note(title: str, content: str) -> str:
             except:
                 pass
 
-def read_note_content_safe(client, filename: str, limit: int = 1000) -> str:
-    """安全读取笔记内容"""
+def read_note_content_safe(client, filename: str, limit: int = 3000) -> str:
+    """安全读取笔记内容（容量提升至3000字）"""
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.md') as tmp:
@@ -169,12 +169,12 @@ def natural_search_notes(keyword: str) -> str:
                 # 1. 检查文件名
                 name_match = keyword.lower() in filename.lower()
                 
-                # 2. 检查文件内容（关键！）
+                # 2. 检查文件内容（容量拉满到3000字！）
                 content_match = False
                 content_preview = ""
                 
-                # 读取文件内容（只读前1000字符，提高速度）
-                content = read_note_content_safe(client, filename, 1000)
+                # 读取文件内容
+                content = read_note_content_safe(client, filename, 3000)
                 content_preview = content[:200]  # 预览200字符
                 
                 # 检查关键词是否在内容中
@@ -200,26 +200,21 @@ def natural_search_notes(keyword: str) -> str:
         
         # 找到内容了，生成自然回复
         if len(matched_files) == 1:
-            # 只有一个结果
             file_info = matched_files[0]
             filename = file_info["filename"]
             preview = file_info["preview"]
             
-            # 提取日期
             date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
             date_str = date_match.group(1) if date_match else "某天"
             
             return f"我在你的记忆库里找到了关于『{keyword}』的记录，是在{date_str}的每日总结里。内容大概是：{preview}..."
         
         else:
-            # 多个结果
             result = f"我在你的记忆库里找到了{len(matched_files)}篇关于『{keyword}』的笔记：\n\n"
-            
             for i, file_info in enumerate(matched_files[:3], 1):
                 filename = file_info["filename"]
                 preview = file_info["preview"]
                 
-                # 提取日期
                 date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
                 date_str = date_match.group(1) if date_match else "某天"
                 
@@ -239,29 +234,24 @@ def safe_read_note(filename: str) -> str:
     tmp_path = None
     
     try:
-        # 验证文件名（防止路径遍历攻击）
         if not filename.endswith('.md') or '..' in filename or '/' in filename:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="❌ 文件名不合法"
             )
         
-        # 创建临时文件
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.md') as f:
             tmp_path = f.name
         
-        # 下载文件
         remote_path = f"{VAULT_PATH}/{filename}"
         client.download_sync(remote_path=remote_path, local_path=tmp_path)
         
-        # 读取内容
         with open(tmp_path, 'r', encoding='utf-8') as f:
-            content = f.read(5000)  # 限制读取长度
+            content = f.read(5000)
         
         if len(content) >= 5000:
             content = content[:5000] + "\n\n... (内容过长，已截断)"
         
-        # 提取日期
         date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
         date_str = date_match.group(1) if date_match else "某天"
         
@@ -273,7 +263,6 @@ def safe_read_note(filename: str) -> str:
             detail=f"❌ 读取失败: {str(e)}"
         )
     finally:
-        # 清理临时文件
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
@@ -281,37 +270,24 @@ def safe_read_note(filename: str) -> str:
                 pass
 
 # ====== 5. 智能功能 ======
-
-# 初始化jieba
 try:
     jieba.initialize()
 except:
     pass
 
 def smart_extract_keyword(message: str) -> str:
-    """使用jieba分词智能提取关键词"""
-    # 1. 清理消息
     clean_msg = re.sub(r'[^\w\u4e00-\u9fa5\s]', ' ', message)
-    
-    # 2. 中文分词
     words = jieba.lcut(clean_msg)
-    
-    # 3. 过滤停用词
     stop_words = {'的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这'}
     
-    # 4. 提取关键词
     keywords = []
     for word in words:
-        if (len(word) > 1 and 
-            word not in stop_words and 
-            not word.isdigit()):
+        if (len(word) > 1 and word not in stop_words and not word.isdigit()):
             keywords.append(word)
     
-    # 5. 返回最可能的关键词
     if keywords:
         return keywords[0]
     
-    # 6. 备用方案：提取消息中的最长中文词
     chinese_words = re.findall(r'[\u4e00-\u9fa5]{2,}', message)
     if chinese_words:
         return max(chinese_words, key=len)
@@ -319,133 +295,65 @@ def smart_extract_keyword(message: str) -> str:
     return ""
 
 def detect_search_intent(message: str) -> bool:
-    """智能检测是否需要搜索记忆库"""
     triggers = {
         '上次', '之前', '笔记', '记得', '学过', '写过', '记录',
         '查一下', '找找', '在哪里', '什么内容', '回忆', '想起',
         '之前说', '前些天', '上个月', '去年',
         'search', 'find', 'look for', 'where is', 'note', 'memory'
     }
-    
     lower_msg = message.lower()
-    
-    # 检查是否包含触发词
     for trigger in triggers:
         if trigger in lower_msg:
             return True
-    
-    # 检查疑问模式
+            
     question_patterns = [
-        r'(.+)是什么',
-        r'如何(.+)',
-        r'(.+)怎么',
-        r'(.+)在哪里',
-        r'where is (.+)',
-        r'how to (.+)'
+        r'(.+)是什么', r'如何(.+)', r'(.+)怎么', r'(.+)在哪里',
+        r'where is (.+)', r'how to (.+)'
     ]
-    
     for pattern in question_patterns:
         if re.search(pattern, message):
             return True
-    
     return False
 
 # ====== 6. API端点 ======
-
 @app.get("/")
 async def root():
-    """首页"""
     return {
         "status": "🚀 Ethan智能记忆库运行中",
-        "version": "6.1",
-        "features": ["安全鉴权", "智能搜索", "自然语言回复", "北京时间"],
-        "endpoints": {
-            "/health": "健康检查",
-            "/api/time": "获取北京时间",
-            "/api/smart_gateway": "智能记忆网关",
-            "/mcp": "MCP协议接口"
-        }
+        "version": "6.2",
+        "features": ["安全鉴权", "智能搜索", "自然语言回复", "北京时间"]
     }
 
 @app.get("/health")
 async def health_check():
-    """健康检查端点"""
-    return {
-        "status": "healthy",
-        "timestamp": get_beijing_time().isoformat(),
-        "service": "memory-butler"
-    }
+    return {"status": "healthy", "timestamp": get_beijing_time().isoformat()}
 
 @app.get("/api/time")
 async def get_time(authorized: bool = Depends(verify_api_key)):
-    """获取北京时间"""
     beijing_now = get_beijing_time()
     weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    weekday_str = weekdays[beijing_now.weekday()]
-    
     return {
         "time": beijing_now.strftime("%Y-%m-%d %H:%M:%S"),
-        "weekday": weekday_str,
-        "timestamp": beijing_now.timestamp(),
+        "weekday": weekdays[beijing_now.weekday()],
         "timezone": "UTC+8 (北京时间)"
     }
 
 @app.post("/api/smart_gateway")
-async def smart_gateway(
-    request: SmartQueryRequest,
-    authorized: bool = Depends(verify_api_key)
-):
-    """智能记忆网关（小姐姐同款功能）"""
+async def smart_gateway(request: SmartQueryRequest, authorized: bool = Depends(verify_api_key)):
     message = request.message
-    
-    # 1. 检测是否需要搜索
     if not detect_search_intent(message):
-        return {
-            "enhanced_message": message,
-            "triggered": False,
-            "reason": "未检测到搜索意图"
-        }
-    
-    # 2. 提取关键词
+        return {"enhanced_message": message, "triggered": False}
+        
     keyword = smart_extract_keyword(message)
     if not keyword:
-        return {
-            "enhanced_message": message,
-            "triggered": False,
-            "reason": "无法提取有效关键词"
-        }
-    
-    # 3. 执行搜索（使用自然语言搜索）
+        return {"enhanced_message": message, "triggered": False}
+        
     try:
         search_result = natural_search_notes(keyword)
-        
-        # 4. 生成增强提示
-        enhanced_prompt = f"""
-用户说："{message}"
-
-【记忆助手提示】：
-我刚刚在用户的记忆库中搜索了相关信息，这是我发现的内容：
-{search_result}
-
-请基于以上发现，自然地回答用户的问题。
-就像你本来就记得这些内容一样，不要提到"搜索"或"查找"。
-如果用户的问题和记忆内容相关，请结合记忆内容回答。
-"""
-        
-        return {
-            "enhanced_message": enhanced_prompt,
-            "triggered": True,
-            "keyword": keyword,
-            "memory_summary": search_result[:100] + "..."
-        }
-        
+        enhanced_prompt = f"""用户说："{message}"\n\n【记忆助手提示】：\n我刚刚在用户的记忆库中搜索了相关信息，这是我发现的内容：\n{search_result}\n\n请基于以上发现，自然地回答用户的问题。就像你本来就记得这些内容一样，不要提到"搜索"或"查找"。如果用户的问题和记忆内容相关，请结合记忆内容回答。"""
+        return {"enhanced_message": enhanced_prompt, "triggered": True, "keyword": keyword}
     except HTTPException as e:
-        # 搜索出错时，原样返回用户消息
-        return {
-            "enhanced_message": message,
-            "triggered": False,
-            "error": e.detail
-        }
+        return {"enhanced_message": message, "triggered": False, "error": e.detail}
 
 # ====== 7. MCP接口 ======
 @app.post("/mcp")
@@ -456,58 +364,33 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
     
     if method == "initialize":
         return {
-            "jsonrpc": "2.0",
-            "id": msg_id,
+            "jsonrpc": "2.0", "id": msg_id,
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {
-                    "name": "Ethan智能记忆库",
-                    "version": "6.1",
-                    "features": ["natural_language", "smart_search"]
-                }
+                "serverInfo": {"name": "Ethan智能记忆库", "version": "6.2"}
             }
         }
     
     if method == "tools/list":
         return {
-            "jsonrpc": "2.0",
-            "id": msg_id,
+            "jsonrpc": "2.0", "id": msg_id,
             "result": {
                 "tools": [
                     {
                         "name": "save_memory",
                         "description": "【写入】保存日记、笔记或对话",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string"},
-                                "content": {"type": "string"}
-                            },
-                            "required": ["title", "content"]
-                        }
+                        "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "content": {"type": "string"}}, "required": ["title", "content"]}
                     },
                     {
                         "name": "search_memory",
                         "description": "【搜索】智能搜索笔记（自然语言回复）",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "keyword": {"type": "string"}
-                            },
-                            "required": ["keyword"]
-                        }
+                        "inputSchema": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]}
                     },
                     {
                         "name": "read_memory",
                         "description": "【读取】读取笔记详情",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "filename": {"type": "string"}
-                            },
-                            "required": ["filename"]
-                        }
+                        "inputSchema": {"type": "object", "properties": {"filename": {"type": "string"}}, "required": ["filename"]}
                     },
                     {
                         "name": "get_world_time",
@@ -517,13 +400,7 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
                     {
                         "name": "smart_query",
                         "description": "【智能助手】分析对话，自动查找相关记忆",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {"type": "string"}
-                            },
-                            "required": ["message"]
-                        }
+                        "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]}
                     }
                 ]
             }
@@ -544,47 +421,27 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
             elif name == "get_world_time":
                 beijing_now = get_beijing_time()
                 result = f"🕒 现在是{beijing_now.strftime('%Y年%m月%d日 %H:%M:%S')}，{['周一','周二','周三','周四','周五','周六','周日'][beijing_now.weekday()]}"
+            
             elif name == "smart_query":
-                # 智能查询（直接返回自然语言结果）
+                # 【终极修复版】：去他大爷的门卫！只要调工具，直接拿着用户的话去全文检索！
                 message = args.get("message", "")
-                if detect_search_intent(message):
-                    keyword = smart_extract_keyword(message)
-                    if keyword:
-                        result = natural_search_notes(keyword)
-                    else:
-                        result = "我没有从你的话中找到需要搜索的关键词。"
-                else:
-                    result = "当前对话不需要搜索记忆库。"
+                keyword = smart_extract_keyword(message)
+                
+                # 提不出关键词就直接用原话搜，强行喂给 3000 字容量的检索引擎！
+                search_term = keyword if keyword else message
+                result = natural_search_notes(search_term)
+                
             else:
                 result = f"未知工具: {name}"
             
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {
-                    "content": [{"type": "text", "text": result}]
-                }
-            }
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": [{"type": "text", "text": result}]}}
             
         except HTTPException as e:
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {
-                    "code": -32000,
-                    "message": e.detail
-                }
-            }
+            return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32000, "message": e.detail}}
     
     return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
 
 # ====== 8. 全局异常处理 ======
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    """统一异常处理"""
-    return {
-        "error": True,
-        "code": exc.status_code,
-        "detail": exc.detail,
-        "timestamp": get_beijing_time().isoformat()
-    }
+    return {"error": True, "code": exc.status_code, "detail": exc.detail, "timestamp": get_beijing_time().isoformat()}
