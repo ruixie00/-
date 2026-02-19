@@ -91,13 +91,16 @@ def safe_save_note(title: str, content: str) -> str:
     try:
         beijing_now = get_beijing_time()
         
-        # 【V6.4 修复 1：使用新的文件名格式】
-        filename = get_simple_filename()
+        # 清理文件名（防止特殊字符） - 【修复1：保留中文】
+        safe_title = re.sub(r'[^\w\s\u4e00-\u9fa5-]', '', title).strip()
         
-        # 清理文件名（防止特殊字符）
-        safe_title = re.sub(r'[^\w\s-]', '', title).strip()
-        if not safe_title:
-            safe_title = "未命名笔记"
+        # 【V6.4 修复：避免覆盖，基于标题生成文件名】
+        if safe_title:
+            # 使用"日期_标题.md"格式，避免覆盖
+            filename = f"{beijing_now.strftime('%Y%m%d')}_{safe_title}.md"
+        else:
+            # 如果标题清理后为空，回退到原格式
+            filename = get_simple_filename()
             
         md_content = f"""# {title}
 
