@@ -1,4 +1,4 @@
-# api/index.py - 智能记忆库（V6.3 最终完整修复版 - 绝无删减）
+# api/index.py - 智能记忆库（V6.4 修复版 - 文件名格式+搜索增强）
 from fastapi import FastAPI, Request, HTTPException, Depends, status
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -14,7 +14,7 @@ from functools import lru_cache
 app = FastAPI(
     title="Ethan智能记忆库",
     description="24小时在线的个人AI记忆管家",
-    version="6.3"
+    version="6.4"
 )
 
 # ====== 1. 安全鉴权 ======
@@ -78,6 +78,11 @@ def get_beijing_time():
     """获取北京时间（确保一致性）"""
     return datetime.now(timezone.utc) + timedelta(hours=8)
 
+def get_simple_filename():
+    """【V6.4 修复 1：简化文件名格式】生成 20260218【每日总结】.md 格式"""
+    beijing_now = get_beijing_time()
+    return f"{beijing_now.strftime('%Y%m%d')}【每日总结】.md"
+
 def safe_save_note(title: str, content: str) -> str:
     """安全的笔记保存（确保临时文件清理）"""
     client = create_webdav_client()
@@ -85,14 +90,15 @@ def safe_save_note(title: str, content: str) -> str:
     
     try:
         beijing_now = get_beijing_time()
-        timestamp = beijing_now.strftime("%Y-%m-%d_%H%M%S")
+        
+        # 【V6.4 修复 1：使用新的文件名格式】
+        filename = get_simple_filename()
         
         # 清理文件名（防止特殊字符）
         safe_title = re.sub(r'[^\w\s-]', '', title).strip()
         if not safe_title:
             safe_title = "未命名笔记"
             
-        filename = f"{timestamp}_每日总结.md"
         md_content = f"""# {title}
 
 {content}
@@ -148,8 +154,8 @@ def read_note_content_safe(client, filename: str, limit: int = 3000) -> str:
                 pass
 
 @lru_cache(maxsize=128)
-def natural_search_notes(keyword: str) -> str:
-    """自然语言搜索：返回自然语言结果"""
+def enhanced_natural_search_notes(keyword: str) -> str:
+    """【V6.4 修复 2：增强搜索功能】自然语言搜索：更好的匹配算法"""
     client = create_webdav_client()
     
     try:
@@ -162,24 +168,47 @@ def natural_search_notes(keyword: str) -> str:
         
         # 搜索结果
         matched_files = []
+        keyword_lower = keyword.lower()
         
         # 遍历每个文件，检查文件名和内容
         for filename in md_files:
             try:
-                # 1. 检查文件名
-                name_match = keyword.lower() in filename.lower()
+                # 1. 检查文件名（新的格式匹配）
+                name_match = keyword_lower in filename.lower()
                 
-                # 2. 检查文件内容（容量拉满到3000字！）
+                # 2. 检查文件内容（增强匹配算法）
                 content_match = False
                 content_preview = ""
+                match_details = []
                 
                 # 读取文件内容
                 content = read_note_content_safe(client, filename, 3000)
+                content_lower = content.lower()
                 content_preview = content[:200]  # 预览200字符
                 
-                # 检查关键词是否在内容中
-                if keyword.lower() in content.lower():
+                # 【V6.4 增强匹配算法】
+                
+                # 精确匹配
+                if keyword_lower in content_lower:
                     content_match = True
+                    match_details.append("精确匹配")
+                
+                # 包含匹配：检查关键词是否被内容包含
+                if not content_match and len(keyword) >= 2:
+                    content_words = content_lower.split()
+                    for word in content_words:
+                        if keyword_lower in word or word in keyword_lower:
+                            content_match = True
+                            match_details.append("包含匹配")
+                            break
+                
+                # 字符匹配：检查关键词的所有字符是否都在内容中
+                if not content_match and len(keyword) >= 2:
+                    keyword_chars = set(keyword_lower)
+                    content_chars = set(content_lower)
+                    if keyword_chars.issubset(content_chars):
+                        content_match = True
+                        match_details.append("字符匹配")
                 
                 # 如果文件名或内容匹配，就加入结果
                 if name_match or content_match:
@@ -187,7 +216,8 @@ def natural_search_notes(keyword: str) -> str:
                         "filename": filename,
                         "name_match": name_match,
                         "content_match": content_match,
-                        "preview": content_preview
+                        "preview": content_preview,
+                        "match_details": match_details
                     })
                     
             except Exception as e:
@@ -204,10 +234,23 @@ def natural_search_notes(keyword: str) -> str:
             filename = file_info["filename"]
             preview = file_info["preview"]
             
-            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+            # 【V6.4 修复：更好的日期提取】
+            date_match = re.search(r'(\d{8})', filename)
             date_str = date_match.group(1) if date_match else "某天"
+            if len(date_str) == 8:
+                formatted_date = f"{date_str[:4]}年{date_str[4:6]}月{date_str[6:8]}日"
+            else:
+                formatted_date = date_str
             
-            return f"我在你的记忆库里找到了关于『{keyword}』的记录，是在{date_str}的每日总结里。内容大概是：{preview}..."
+            match_type = ""
+            if file_info["name_match"] and file_info["content_match"]:
+                match_type = "文件名和内容都"
+            elif file_info["name_match"]:
+                match_type = "文件名"
+            else:
+                match_type = "内容"
+            
+            return f"我在你的记忆库里找到了关于『{keyword}』的记录，是在{formatted_date}的每日总结里（{match_type}匹配）。内容大概是：{preview}..."
         
         else:
             result = f"我在你的记忆库里找到了{len(matched_files)}篇关于『{keyword}』的笔记：\n\n"
@@ -215,10 +258,22 @@ def natural_search_notes(keyword: str) -> str:
                 filename = file_info["filename"]
                 preview = file_info["preview"]
                 
-                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+                date_match = re.search(r'(\d{8})', filename)
                 date_str = date_match.group(1) if date_match else "某天"
+                if len(date_str) == 8:
+                    formatted_date = f"{date_str[:4]}年{date_str[4:6]}月{date_str[6:8]}日"
+                else:
+                    formatted_date = date_str
                 
-                result += f"{i}. {date_str}的记录提到：{preview}...\n\n"
+                match_type = ""
+                if file_info["name_match"] and file_info["content_match"]:
+                    match_type = "文件名和内容"
+                elif file_info["name_match"]:
+                    match_type = "文件名"
+                else:
+                    match_type = "内容"
+                
+                result += f"{i}. {formatted_date}的记录（{match_type}匹配）提到：{preview}...\n\n"
             
             if len(matched_files) > 3:
                 result += f"还有{len(matched_files) - 3}篇相关记录，需要的话我可以帮你详细查看。"
@@ -256,10 +311,15 @@ def safe_read_note(filename: str) -> str:
         if len(content) >= 5000:
             content = content[:5000] + "\n\n... (内容过长，已截断)"
         
-        date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+        # 【V6.4 修复：更好的日期提取】
+        date_match = re.search(r'(\d{8})', filename)
         date_str = date_match.group(1) if date_match else "某天"
+        if len(date_str) == 8:
+            formatted_date = f"{date_str[:4]}年{date_str[4:6]}月{date_str[6:8]}日"
+        else:
+            formatted_date = date_str
         
-        return f"这是你{date_str}的笔记内容：\n\n{content}"
+        return f"这是你{formatted_date}的笔记内容：\n\n{content}"
         
     except Exception as e:
         raise HTTPException(
@@ -324,8 +384,8 @@ def detect_search_intent(message: str) -> bool:
 async def root():
     return {
         "status": "🚀 Ethan智能记忆库运行中",
-        "version": "6.3",
-        "features": ["安全鉴权", "智能搜索", "自然语言回复", "北京时间"]
+        "version": "6.4",
+        "features": ["安全鉴权", "智能搜索", "自然语言回复", "北京时间", "文件名修复", "搜索增强"]
     }
 
 @app.get("/health")
@@ -353,7 +413,8 @@ async def smart_gateway(request: SmartQueryRequest, authorized: bool = Depends(v
         return {"enhanced_message": message, "triggered": False}
         
     try:
-        search_result = natural_search_notes(keyword)
+        # 【V6.4 修复：使用增强版搜索】
+        search_result = enhanced_natural_search_notes(keyword)
         enhanced_prompt = f"""用户说："{message}"\n\n【记忆助手提示】：\n我刚刚在用户的记忆库中搜索了相关信息，这是我发现的内容：\n{search_result}\n\n请基于以上发现，自然地回答用户的问题。就像你本来就记得这些内容一样，不要提到"搜索"或"查找"。如果用户的问题和记忆内容相关，请结合记忆内容回答。"""
         return {"enhanced_message": enhanced_prompt, "triggered": True, "keyword": keyword}
     except HTTPException as e:
@@ -372,7 +433,7 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "Ethan智能记忆库", "version": "6.3"}
+                "serverInfo": {"name": "Ethan智能记忆库", "version": "6.4"}
             }
         }
     
@@ -419,7 +480,8 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
             if name == "save_memory":
                 result = safe_save_note(args.get("title", ""), args.get("content", ""))
             elif name == "search_memory":
-                result = natural_search_notes(args.get("keyword", ""))
+                # 【V6.4 修复：使用增强版搜索】
+                result = enhanced_natural_search_notes(args.get("keyword", ""))
             elif name == "read_memory":
                 result = safe_read_note(args.get("filename", ""))
             elif name == "get_world_time":
@@ -427,13 +489,13 @@ async def mcp_endpoint(request: Request, authorized: bool = Depends(verify_api_k
                 result = f"🕒 现在是{beijing_now.strftime('%Y年%m月%d日 %H:%M:%S')}，{['周一','周二','周三','周四','周五','周六','周日'][beijing_now.weekday()]}"
             
             elif name == "smart_query":
-                # 【终极修复版】：去他大爷的门卫！只要调工具，直接拿着用户的话去全文检索！
+                # 【V6.4 修复：使用增强版搜索】
                 message = args.get("message", "")
                 keyword = smart_extract_keyword(message)
                 
-                # 提不出关键词就直接用原话搜，强行喂给 3000 字容量的检索引擎！
+                # 提不出关键词就直接用原话搜，强行喂给增强版检索引擎！
                 search_term = keyword if keyword else message
-                result = natural_search_notes(search_term)
+                result = enhanced_natural_search_notes(search_term)
                 
             else:
                 result = f"未知工具: {name}"
